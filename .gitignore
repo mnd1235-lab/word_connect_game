@@ -1,0 +1,21 @@
+# 파이썬
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 환경 변수 / 비밀
+.env
+.env.*
+.streamlit/secrets.toml
+!.streamlit/secrets.toml.example
+
+# 로그
+*.log
+
+# 에디터 / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
