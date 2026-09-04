@@ -3,15 +3,19 @@
 PC 모니터를 두 사람이 함께 보는 상황을 전제로 한 단일 화면.
 모바일 대응은 하지 않는다(PRD 5장 모바일 조항은 적용 대상 아님).
 
-5단계에서는 표시와 입력 폼까지만 만든다. 제출 처리는 6단계에서 붙인다.
+제출 → 로컬 판정(rules) → 필요하면 LLM 판정(judge) → 상태 전이(game) 순서로 돈다.
+Streamlit 은 동기 실행이라 st.spinner 가 도는 동안 화면이 잠긴다.
+별도의 'judging' 상태나 중복 제출 방지 로직은 필요 없다 — 넣지 않는다.
 """
 
 import html
+import time
 from pathlib import Path
 
 import streamlit as st
 
 import game
+import judge
 import rules
 
 # --- 색상 상수 ---------------------------------------------------------
@@ -36,10 +40,22 @@ def get_dictionary() -> set[str]:
     return rules.load_dictionary(str(DICT_PATH))
 
 
+def start_new_game() -> None:
+    """새 판을 연다.
+
+    judge_cache 는 **비우지 않는다** — 같은 단어를 다시 묻지 않기 위해서다.
+    이건 판 단위가 아니라 세션 단위 캐시다.
+    입력창 위젯 key(word_N)는 지운다. 안 지우면 새 판 첫 턴에
+    지난 판의 첫 입력값이 그대로 남아 있다.
+    """
+    for key in [k for k in st.session_state if k.startswith("word_")]:
+        del st.session_state[key]
+    st.session_state["game"] = game.new_game(game.pick_seed_word(get_dictionary()))
+
+
 def get_state() -> game.GameState:
     if "game" not in st.session_state:
-        seed = game.pick_seed_word(get_dictionary())
-        st.session_state["game"] = game.new_game(seed)
+        start_new_game()
     return st.session_state["game"]
 
 
@@ -120,16 +136,120 @@ CSS = f"""
 }}
 .history-row .word {{ color: var(--text-color, #111827); font-weight: 600; }}
 div[data-testid="stForm"] input {{ font-size: 1.6rem !important; }}
+.result {{
+  text-align: center;
+  font-size: 2.6rem;
+  font-weight: 800;
+  margin: .4rem 0 1.2rem;
+}}
 </style>
 """
 
 
-def _read_api_key() -> str:
-    """secrets 가 아직 없어도 화면은 뜨게 한다. 실제 사용은 6단계."""
+def read_secret(name: str) -> str:
+    """secrets.toml 이나 클라우드 Secrets 에서 값을 읽는다. 없으면 빈 문자열."""
     try:
-        return st.secrets.get("OPENAI_API_KEY", "")
+        return str(st.secrets.get(name, "") or "")
     except Exception:
         return ""
+
+
+# --- 접근 제한 ---------------------------------------------------------
+# Streamlit Community Cloud 앱은 URL만 알면 열린다. 키가 새지는 않지만
+# 열린 사람이 단어를 칠 때마다 OpenAI 크레딧이 나간다.
+# 뷰어 제한(클라우드 설정)이 1차 방어선이고, 이 게이트가 2차다.
+
+def require_password() -> None:
+    """비밀번호가 맞을 때까지 화면을 열지 않는다.
+
+    APP_PASSWORD 가 **설정돼 있지 않으면 통과시키지 않는다.** 설정을 깜빡한
+    앱이 조용히 공개되는 것보다, 안 열리는 편이 낫다.
+    """
+    password = read_secret("APP_PASSWORD")
+
+    if not password:
+        st.error(
+            "APP_PASSWORD 가 설정되지 않았습니다. "
+            "로컬은 .streamlit/secrets.toml, 클라우드는 앱 Secrets 에 넣어 주세요."
+        )
+        st.stop()
+
+    if st.session_state.get("authed"):
+        return
+
+    st.title("끝말잇기")
+    with st.form("auth_form"):
+        entered = st.text_input("비밀번호", type="password")
+        unlocked = st.form_submit_button("들어가기")
+    if unlocked:
+        if entered == password:
+            st.session_state["authed"] = True
+            st.rerun()
+        st.error("비밀번호가 맞지 않아요")
+    st.stop()
+
+
+# --- 판 종료 -----------------------------------------------------------
+
+def winner_of(state: game.GameState) -> int:
+    """진 사람의 반대편이 이긴다."""
+    return 2 if state.loser_player == 1 else 1
+
+
+@st.dialog("게임 종료")
+def result_dialog(state: game.GameState) -> None:
+    """화면을 갈아끼우지 않고 위에 덮는다(PRD 5장)."""
+    st.markdown(
+        f'<div class="result">플레이어 {winner_of(state)} 승리</div>',
+        unsafe_allow_html=True,
+    )
+    if st.button("다시 하기", use_container_width=True):
+        start_new_game()
+        st.rerun()
+
+
+# --- 제출 처리 ---------------------------------------------------------
+
+def handle_submit(state: game.GameState, raw: str) -> game.GameState:
+    """한 번의 제출을 처리해 다음 상태를 돌려준다.
+
+    LLM 호출을 아끼려고 로컬 판정을 먼저 돌린다.
+    사전에 있으면 즉시 통과, 규칙 위반이면 즉시 무효, 둘 다 아닐 때만 LLM.
+    """
+    started = time.perf_counter()
+    word = rules.normalize(raw)
+
+    result = rules.check_local(
+        word,
+        required_syllable=state.required_syllable,
+        used_words=state.used_words,
+        dictionary=get_dictionary(),
+    )
+
+    if result.kind == "invalid":
+        next_state = game.reject(state, result.reason)
+        path = "local-invalid"
+    elif result.kind == "accepted":
+        next_state = game.accept(state, word)
+        path = "local-accepted"
+    else:
+        with st.spinner("확인 중..."):
+            verdict = judge.judge_word(
+                word,
+                st.session_state["judge_cache"],
+                st.session_state["api_key"],
+            )
+        if verdict.valid:
+            next_state = game.accept(
+                state, word, notice=verdict.reason if verdict.fallback else None
+            )
+        else:
+            next_state = game.reject(state, rules.MSG_NOT_IN_DICT)
+        path = "llm"
+
+    elapsed = (time.perf_counter() - started) * 1000
+    print(f"[submit] {word!r} path={path} {elapsed:.0f}ms")
+    return next_state
 
 
 # --- 화면 --------------------------------------------------------------
@@ -138,9 +258,10 @@ def main() -> None:
     st.set_page_config(page_title="끝말잇기", layout="centered")
     st.markdown(CSS, unsafe_allow_html=True)
 
+    require_password()  # 통과 못 하면 여기서 st.stop()
+
     st.session_state.setdefault("judge_cache", {})
-    # 키는 6단계에서 judge_word 에 넘긴다. 여기서는 읽어 두기만 한다.
-    st.session_state.setdefault("api_key", _read_api_key())
+    st.session_state.setdefault("api_key", read_secret("OPENAI_API_KEY"))
 
     state = get_state()
     finished = state.phase == "finished"
@@ -160,16 +281,24 @@ def main() -> None:
     # 하단 — 입력 폼
     # key 에 체인 길이를 붙인다. 턴이 넘어가면 key 가 바뀌어 새 위젯이 되므로
     # 입력창이 자동으로 비고, 무효면 같은 key 라 값이 남는다(PRD 5장).
+    input_key = f"word_{len(state.chain)}"
     with st.form("word_form", clear_on_submit=False):
         st.text_input(
             "단어 입력",
-            key=f"word_{len(state.chain)}",
+            key=input_key,
             placeholder="이어질 단어를 입력하세요",
             label_visibility="collapsed",
             disabled=finished,
         )
-        st.form_submit_button("제출", disabled=finished, use_container_width=True)
-        # 6단계에서 이 반환값으로 판정 파이프라인을 돌린다.
+        submitted = st.form_submit_button(
+            "제출", disabled=finished, use_container_width=True
+        )
+
+    if submitted and not finished:
+        st.session_state["game"] = handle_submit(
+            state, st.session_state.get(input_key, "")
+        )
+        st.rerun()
 
     # 무효 사유와 알림은 입력창 아래에 한 줄씩
     if state.last_error:
@@ -177,8 +306,13 @@ def main() -> None:
     if state.notice:
         st.info(state.notice)
 
-    st.button("포기", key="give_up", disabled=finished)
-    # 7단계에서 game.give_up 을 붙인다.
+    # 포기 — 누른 사람이 진다. 확인 대화상자는 두지 않는다(파일럿).
+    if st.button("포기", key="give_up", disabled=finished):
+        st.session_state["game"] = game.give_up(state)
+        st.rerun()
+
+    if finished:
+        result_dialog(state)
 
 
 if __name__ == "__main__":

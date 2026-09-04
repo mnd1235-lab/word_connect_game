@@ -60,6 +60,17 @@ pytest.ini              pythonpath=. (테스트에서 루트 모듈 import용)
 - `judge_cache`는 **세션 단위**다. '다시 하기'로 판이 바뀌어도 비우지 않는다.
 - 비밀값은 항상 `st.secrets` 우선. `python-dotenv`와 `.env`는 쓰지 않는다.
 
+## 밟기 쉬운 함정
+
+- **`secrets.toml` 은 BOM 없는 UTF-8이어야 한다.** Windows PowerShell 5.1의
+  `Set-Content -Encoding utf8` 은 파일 앞에 BOM 3바이트를 붙이고, TOML 파서가
+  첫 줄부터 실패한다. 증상은 "키가 죽은 것처럼 보임"이다. 다시 만들 때는
+  `[IO.File]::WriteAllText($f, $t, (New-Object Text.UTF8Encoding $false))` 를 쓴다.
+  확인: `python -c "import tomllib; print(list(tomllib.load(open('.streamlit/secrets.toml','rb'))))"`
+- **키를 못 읽으면 조용히 다 통과된다.** `judge.py` 는 실패를 통과로 처리하므로,
+  키가 비어 있으면 사전에 없는 단어가 전부 "AI 확인 실패 — 통과 처리했어요"로
+  넘어간다. 판정이 이상하게 관대하면 키부터 확인한다.
+
 ## 알려진 한계
 
 - **막다른 음절.** 두음법칙을 구현하지 않으므로 `력·름·락·래·류·니·루·람` 등으로 끝나는
@@ -76,9 +87,9 @@ pytest.ini              pythonpath=. (테스트에서 루트 모듈 import용)
 | 3 | `judge.py` | 완료 |
 | 4 | `game.py` + 테스트 | 완료 |
 | 5 | `app.py` 화면 | 완료 (표시·입력 폼까지) |
-| 6 | 판정 파이프라인 결선 | — |
-| 7 | 포기·승패·다시 하기 | — |
-| 8 | Cloud 배포 · 접근 제한 | — |
+| 6 | 판정 파이프라인 결선 | 완료 |
+| 7 | 포기·승패·다시 하기 | 완료 |
+| 8 | Cloud 배포 · 접근 제한 | 코드 완료, 배포는 수동 |
 | 9 | 완료 조건 점검 · 기록지 | — |
 
 단계를 끝낼 때마다 `구현-프롬프트.md`에 적힌 커밋 메시지로 커밋하고 이 표를 갱신한다.
