@@ -67,6 +67,15 @@ pytest.ini              pythonpath=. (테스트에서 루트 모듈 import용)
   첫 줄부터 실패한다. 증상은 "키가 죽은 것처럼 보임"이다. 다시 만들 때는
   `[IO.File]::WriteAllText($f, $t, (New-Object Text.UTF8Encoding $false))` 를 쓴다.
   확인: `python -c "import tomllib; print(list(tomllib.load(open('.streamlit/secrets.toml','rb'))))"`
+- **`.ps1` 은 BOM 있는 UTF-8, `secrets.toml` 은 BOM 없는 UTF-8.** 정반대다.
+  Windows PowerShell 5.1 은 BOM 없는 `.ps1` 을 CP949 로 읽어 한글이 깨지고
+  "문자열에 ' 종결자가 없습니다" 로 죽는다. TOML 은 BOM 이 있으면 첫 줄부터 죽는다.
+  스크립트를 새로 만들 때마다 확인한다.
+- **한 번 추적된 파일은 `.gitignore` 로 막히지 않는다.** 초기 커밋에 `.env` 가
+  들어가 있으면 나중에 `.gitignore` 에 적어도 계속 추적된다. 2026-09-04 에 실제로
+  이 저장소에서 `.env` 가 히스토리에 남아 있었고, `git filter-repo --invert-paths`
+  로 지웠다. 원격에 올리기 전에는 항상 확인한다:
+  `git log --all --full-history -- .env .streamlit/secrets.toml` 이 빈 결과여야 한다.
 - **키를 못 읽으면 조용히 다 통과된다.** `judge.py` 는 실패를 통과로 처리하므로,
   키가 비어 있으면 사전에 없는 단어가 전부 "AI 확인 실패 — 통과 처리했어요"로
   넘어간다. 판정이 이상하게 관대하면 키부터 확인한다.
@@ -90,7 +99,7 @@ pytest.ini              pythonpath=. (테스트에서 루트 모듈 import용)
 | 6 | 판정 파이프라인 결선 | 완료 |
 | 7 | 포기·승패·다시 하기 | 완료 |
 | 8 | Cloud 배포 · 접근 제한 | 코드 완료, 배포는 수동 |
-| 9 | 완료 조건 점검 · 기록지 | — |
+| 9 | 완료 조건 점검 · 기록지 | 기록지 완료, 플레이 대기 |
 
 단계를 끝낼 때마다 `구현-프롬프트.md`에 적힌 커밋 메시지로 커밋하고 이 표를 갱신한다.
 
