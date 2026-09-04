@@ -73,9 +73,9 @@ pytest.ini              pythonpath=. (테스트에서 루트 모듈 import용)
 | 0 | 파이썬 스캐폴드, secrets 구조 | 완료 |
 | 1 | `data/words.txt` (4,311개) | 완료 |
 | 2 | `rules.py` + 테스트 | 완료 |
-| 3 | `judge.py` | — |
-| 4 | `game.py` + 테스트 | — |
-| 5 | `app.py` 화면 | — |
+| 3 | `judge.py` | 완료 |
+| 4 | `game.py` + 테스트 | 완료 |
+| 5 | `app.py` 화면 | 완료 (표시·입력 폼까지) |
 | 6 | 판정 파이프라인 결선 | — |
 | 7 | 포기·승패·다시 하기 | — |
 | 8 | Cloud 배포 · 접근 제한 | — |
